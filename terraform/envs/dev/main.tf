@@ -57,16 +57,3 @@ module "eks" {
     }
   }
 }
-
-# ---------- ECR (one repo per service) ----------
-resource "aws_ecr_repository" "service" {
-  for_each = toset(var.services)
-
-  name                 = "${var.project}/${each.key}"
-  image_tag_mutability = "IMMUTABLE"
-  force_delete         = true
-
-  image_scanning_configuration {
-    scan_on_push = true
-  }
-}

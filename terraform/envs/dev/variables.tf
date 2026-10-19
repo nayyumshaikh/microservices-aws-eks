@@ -18,8 +18,3 @@ variable "kubernetes_version" {
   default     = "1.33"
   description = "Check supported versions with: aws eks describe-cluster-versions"
 }
-
-variable "services" {
-  type    = list(string)
-  default = ["users", "orders"]
-}

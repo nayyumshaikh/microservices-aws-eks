@@ -1,0 +1,108 @@
+name: ci
+
+on:
+  pull_request:
+    paths: ["services/**", ".github/workflows/ci.yml"]
+  push:
+    branches: [main]
+    paths: ["services/**", ".github/workflows/ci.yml"]
+
+permissions:
+  contents: read
+
+env:
+  ECR_PREFIX: microservices
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.set.outputs.services }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: set
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BASE: ${{ github.event.before }}
+        run: |
+          ALL='["users","orders"]'
+          if [ "$EVENT" = "pull_request" ]; then BASE="$PR_BASE"; else BASE="$PUSH_BASE"; fi
+
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "$BASE" 2>/dev/null; then
+            echo "services=$ALL" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          CHANGED=$(git diff --name-only "$BASE" HEAD)
+          if echo "$CHANGED" | grep -q "^.github/workflows/ci.yml$"; then
+            echo "services=$ALL" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          SERVICES=()
+          for s in users orders; do
+            if echo "$CHANGED" | grep -q "^services/$s/"; then SERVICES+=("\"$s\""); fi
+          done
+          echo "services=[$(IFS=,; echo "${SERVICES[*]}")]" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: detect
+    if: needs.detect.outputs.services != '[]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.detect.outputs.services) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t local/${{ matrix.service }}:ci services/${{ matrix.service }}
+
+      - name: Smoke test
+        run: |
+          docker run -d --name smoke -p 5000:5000 local/${{ matrix.service }}:ci
+          for i in $(seq 1 15); do
+            curl -fs http://localhost:5000/health && exit 0
+            sleep 1
+          done
+          docker logs smoke
+          exit 1
+
+      - name: Trivy scan (HIGH/CRITICAL fails the build)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.58.1 image --severity HIGH,CRITICAL --exit-code 1 \
+            --ignore-unfixed local/${{ matrix.service }}:ci
+
+      # Everything below runs only on main: PRs never get AWS access
+      - name: Configure AWS credentials (OIDC)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to ECR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Push to ECR (skip if tag already exists)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REPO: ${{ env.ECR_PREFIX }}/${{ matrix.service }}
+        run: |
+          if aws ecr describe-images --repository-name "$REPO" \
+               --image-ids imageTag="$GITHUB_SHA" >/dev/null 2>&1; then
+            echo "Tag $GITHUB_SHA already exists, skipping push"
+          else
+            docker tag local/${{ matrix.service }}:ci "$REGISTRY/$REPO:$GITHUB_SHA"
+            docker push "$REGISTRY/$REPO:$GITHUB_SHA"
+          fi

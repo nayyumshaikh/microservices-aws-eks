@@ -1,0 +1,14 @@
+services:
+  users:
+    build: ./services/users
+    ports:
+      - "5001:5000"
+
+  orders:
+    build: ./services/orders
+    ports:
+      - "5002:5000"
+    environment:
+      USERS_URL: http://users:5000
+    depends_on:
+      - users

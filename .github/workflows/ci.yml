@@ -101,7 +101,7 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
-
+    
       - name: Login to ECR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         id: ecr

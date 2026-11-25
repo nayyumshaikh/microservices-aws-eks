@@ -30,3 +30,4 @@ def create_user():
     new_id = max(USERS) + 1
     USERS[new_id] = {"id": new_id, "name": data["name"]}
     return jsonify(USERS[new_id]), 201
+# trigger CI
